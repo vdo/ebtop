@@ -112,6 +112,22 @@ static __always_inline __u32 this_cpu(void)
 	return bpf_get_smp_processor_id();
 }
 
+/*
+ * Array index the verifier can prove is in range. An earlier `if (i < n)` is
+ * not always enough: with some clang/kernel combinations (e.g. Ubuntu 22.04)
+ * the bound is lost through register copies and 32-bit zero extension, and
+ * the load fails with "unbounded memory access". The empty asm hides the
+ * value from the optimizer so the mask isn't dropped as redundant; the mask
+ * then bounds it right where it's used. n must be a power of two, and callers
+ * still range-check first so out-of-range values are dropped, not wrapped.
+ */
+#define IDX(i, n) ({ __u64 __i = (i); barrier_var(__i); __i & ((n) - 1); })
+#define PER_CPU(arr, cpu) ((arr)[IDX(cpu, MAX_CPUS)])
+
+#define POW2(n) (((n) & ((n) - 1)) == 0)
+_Static_assert(POW2(MAX_CPUS) && POW2(HIST_SLOTS) && POW2(NR_SYSCALLS) && POW2(NR_DROP_REASONS),
+	       "IDX() masks need power-of-two array sizes");
+
 static __always_inline struct pstat *get_pstat(__u32 tgid, struct task_struct *t)
 {
 	struct pstat *ps, zero = {};
@@ -144,10 +160,10 @@ int BPF_PROG(on_sched_switch, int preempt, struct task_struct *prev,
 
 	if (cpu >= MAX_CPUS)
 		return 0;
-	cs = &cpus[cpu];
+	cs = &PER_CPU(cpus, cpu);
 	prev_pid = BPF_CORE_READ(prev, pid);
 	next_pid = BPF_CORE_READ(next, pid);
-	counters[cpu][C_CSW]++;
+	PER_CPU(counters, cpu)[C_CSW]++;
 
 	/* on-CPU accounting for the task being switched out */
 	if (cs->start && prev_pid) {
@@ -176,7 +192,7 @@ int BPF_PROG(on_sched_switch, int preempt, struct task_struct *prev,
 		return 0;
 	delta = now - *tsp;
 	*tsp = 0;
-	runq_hist[cpu][hist_slot(delta)]++;
+	PER_CPU(runq_hist, cpu)[IDX(hist_slot(delta), HIST_SLOTS)]++;
 	ps = get_pstat(BPF_CORE_READ(next, tgid), next);
 	if (ps) {
 		__sync_fetch_and_add(&ps->runq_ns, delta);
@@ -192,7 +208,7 @@ static __always_inline int record_enqueue(struct task_struct *p)
 
 	if (!pid || cpu >= MAX_CPUS)
 		return 0;
-	counters[cpu][C_WAKEUPS]++;
+	PER_CPU(counters, cpu)[C_WAKEUPS]++;
 	tsp = bpf_task_storage_get(&enqueued, p, 0, BPF_LOCAL_STORAGE_GET_F_CREATE);
 	if (tsp)
 		*tsp = bpf_ktime_get_ns();
@@ -223,7 +239,7 @@ int BPF_PROG(on_exec, struct task_struct *p, int old_pid, struct linux_binprm *b
 	__u64 len;
 
 	if (cpu < MAX_CPUS)
-		counters[cpu][C_EXEC]++;
+		PER_CPU(counters, cpu)[C_EXEC]++;
 
 	/* exec changes comm; keep the process table in sync */
 	ps = bpf_map_lookup_elem(&pstats, &tgid);
@@ -259,7 +275,7 @@ int BPF_PROG(on_fork, struct task_struct *parent, struct task_struct *child)
 	__u32 cpu = this_cpu();
 
 	if (cpu < MAX_CPUS)
-		counters[cpu][C_FORK]++;
+		PER_CPU(counters, cpu)[C_FORK]++;
 	return 0;
 }
 
@@ -274,7 +290,7 @@ int BPF_PROG(on_exit, struct task_struct *p)
 	if (pid != tgid) /* threads exiting are not interesting here */
 		return 0;
 	if (cpu < MAX_CPUS)
-		counters[cpu][C_EXIT]++;
+		PER_CPU(counters, cpu)[C_EXIT]++;
 
 	e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
 	if (!e)
@@ -301,9 +317,9 @@ int BPF_PROG(on_sys_enter, struct pt_regs *regs, long id)
 
 	if (cpu >= MAX_CPUS)
 		return 0;
-	counters[cpu][C_SYSCALLS]++;
+	PER_CPU(counters, cpu)[C_SYSCALLS]++;
 	if ((__u64)id < NR_SYSCALLS)
-		syscall_cnt[cpu][id]++;
+		PER_CPU(syscall_cnt, cpu)[IDX(id, NR_SYSCALLS)]++;
 	ps = current_pstat();
 	if (ps)
 		__sync_fetch_and_add(&ps->syscalls, 1);
@@ -318,7 +334,7 @@ int on_page_fault(void *ctx)
 
 	if (cpu >= MAX_CPUS)
 		return 0;
-	counters[cpu][C_FAULTS]++;
+	PER_CPU(counters, cpu)[C_FAULTS]++;
 	ps = current_pstat();
 	if (ps)
 		__sync_fetch_and_add(&ps->faults, 1);
@@ -338,7 +354,7 @@ int BPF_PROG(on_bio_queue, struct bio *bio)
 		return 0;
 	if (op != REQ_OP_READ && op != REQ_OP_WRITE)
 		return 0;
-	counters[cpu][op == REQ_OP_READ ? C_BIO_RD_BYTES : C_BIO_WR_BYTES] += bytes;
+	PER_CPU(counters, cpu)[op == REQ_OP_READ ? C_BIO_RD_BYTES : C_BIO_WR_BYTES] += bytes;
 	ps = current_pstat();
 	if (!ps)
 		return 0;
@@ -371,8 +387,8 @@ int BPF_PROG(on_rq_complete, struct request *rq, int error, unsigned int nr_byte
 	bpf_map_delete_elem(&rq_start, &key);
 	if (cpu >= MAX_CPUS)
 		return 0;
-	counters[cpu][C_BIO_OPS]++;
-	bio_hist[cpu][hist_slot(delta)]++;
+	PER_CPU(counters, cpu)[C_BIO_OPS]++;
+	PER_CPU(bio_hist, cpu)[IDX(hist_slot(delta), HIST_SLOTS)]++;
 	return 0;
 }
 
@@ -386,7 +402,7 @@ int BPF_PROG(on_tcp_sendmsg, struct sock *sk, struct msghdr *msg, __u64 size)
 
 	if (cpu >= MAX_CPUS)
 		return 0;
-	counters[cpu][C_TCP_TX] += size;
+	PER_CPU(counters, cpu)[C_TCP_TX] += size;
 	ps = current_pstat();
 	if (ps)
 		__sync_fetch_and_add(&ps->tx_bytes, size);
@@ -402,7 +418,7 @@ int BPF_PROG(on_tcp_cleanup_rbuf, struct sock *sk, int copied)
 
 	if (cpu >= MAX_CPUS || copied <= 0)
 		return 0;
-	counters[cpu][C_TCP_RX] += copied;
+	PER_CPU(counters, cpu)[C_TCP_RX] += copied;
 	ps = current_pstat();
 	if (ps)
 		__sync_fetch_and_add(&ps->rx_bytes, copied);
@@ -415,7 +431,7 @@ int on_tcp_retransmit(void *ctx)
 	__u32 cpu = this_cpu();
 
 	if (cpu < MAX_CPUS)
-		counters[cpu][C_RETRANS]++;
+		PER_CPU(counters, cpu)[C_RETRANS]++;
 	return 0;
 }
 
@@ -434,6 +450,6 @@ int BPF_PROG(on_kfree_skb, struct sk_buff *skb, void *location, unsigned int rea
 		reason = DROP_SUBSYS_BASE;
 	if (reason >= NR_DROP_REASONS)
 		return 0;
-	drop_cnt[cpu][reason]++;
+	PER_CPU(drop_cnt, cpu)[IDX(reason, NR_DROP_REASONS)]++;
 	return 0;
 }

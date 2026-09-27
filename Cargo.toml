@@ -9,7 +9,7 @@ repository = "https://github.com/vdo/ebtop"
 readme = "README.md"
 keywords = ["ebpf", "bpf", "monitoring", "tui", "linux"]
 categories = ["command-line-utilities", "development-tools::profiling", "os::linux-apis"]
-exclude = ["/.github"]
+exclude = ["/.github", "/docs"]
 
 [features]
 # Build libbpf, libelf and zlib from source and link them statically, so the

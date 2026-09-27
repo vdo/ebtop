@@ -12,6 +12,8 @@ latency, why packets are being dropped, every exec and exit (including
 processes too short-lived for `top` to catch), and what the BPF programs
 already loaded on your system are costing.
 
+![ebtop: CPU, scheduler, disk, network and syscall panels above a process table and a live exec/exit feed](docs/screenshot.png)
+
 ## Panels
 
 | Panel | What it shows | Source |
