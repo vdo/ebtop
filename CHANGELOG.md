@@ -6,6 +6,22 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- btop color themes: all 41 themes shipped with btop plus its built-in
+  Default and TTY themes are bundled, and installed/user btop themes are
+  picked up. The theme follows btop's own `color_theme` setting by default.
+  `-t/--theme`, `--transparent`, `--list-themes`, and `t`/`T` to cycle live.
+- Zoom a panel to full screen by clicking it or pressing `1`–`7`; click
+  again (or press the key / `Esc`) to return to the overview. Panels carry
+  btop-style superscript numbers.
+- Mouse wheel scrolls the process / BPF program table.
+
+### Fixed
+
+- `ebtop --dump | head` and `--list-themes | head` no longer panic on a
+  closed pipe.
+
 ## [0.9.0] - 2026-09-27
 
 ### Added

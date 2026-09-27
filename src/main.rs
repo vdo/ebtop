@@ -1,5 +1,6 @@
 mod app;
 mod bpf;
+mod theme;
 mod ui;
 
 use std::cell::RefCell;
@@ -10,25 +11,45 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use libbpf_rs::RingBufferBuilder;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton,
+    MouseEventKind,
+};
+use ratatui::crossterm::execute;
+use ratatui::layout::{Position, Rect};
 
-use app::{App, FeedItem, FeedKind, View};
+use app::{App, FeedItem, FeedKind, Panel, View};
 
-const USAGE: &str = "usage: ebtop [-i SECONDS] [--dump] [-V]
+const USAGE: &str = "usage: ebtop [-i SECONDS] [-t THEME] [--transparent] [--dump] [--list-themes] [-V]
 
 Real-time kernel activity dashboard built on eBPF (needs root).
 
   -i, --interval SECONDS   refresh interval (default 1.0)
+  -t, --theme NAME|PATH    btop color theme (default: color_theme from
+                           ~/.config/ebtop/ebtop.conf, else from btop.conf)
+      --transparent        keep the terminal's background instead of the theme's
+      --list-themes        list available themes and exit
       --dump               sample one interval, print a text summary and exit
   -V, --version            print version and exit";
 
-fn parse_args() -> Result<(Duration, bool)> {
+struct Opts {
+    interval: Duration,
+    dump: bool,
+    theme: Option<String>,
+    transparent: bool,
+    list_themes: bool,
+}
+
+fn parse_args() -> Result<Opts> {
     let mut args = std::env::args().skip(1);
     let mut interval = 1.0;
-    let mut dump = false;
+    let mut opts = Opts { interval: Duration::ZERO, dump: false, theme: None, transparent: false, list_themes: false };
     while let Some(a) = args.next() {
         match a.as_str() {
-            "--dump" => dump = true,
+            "--dump" => opts.dump = true,
+            "--transparent" => opts.transparent = true,
+            "--list-themes" => opts.list_themes = true,
+            "-t" | "--theme" => opts.theme = Some(args.next().context("missing value for --theme")?),
             "-i" | "--interval" => {
                 interval = args.next().context("missing value for --interval")?.parse().context("bad interval")?
             }
@@ -43,7 +64,28 @@ fn parse_args() -> Result<(Duration, bool)> {
             _ => bail!("unknown argument {a}\n\n{USAGE}"),
         }
     }
-    Ok((Duration::from_secs_f64(f64::clamp(interval, 0.1, 10.0)), dump))
+    opts.interval = Duration::from_secs_f64(f64::clamp(interval, 0.1, 10.0));
+    Ok(opts)
+}
+
+/// Picks the theme: --theme, else the configured one (ebtop.conf, then
+/// btop.conf), else btop's Default.
+fn select_theme(opts: &Opts) -> Result<(Vec<theme::Entry>, String, bool)> {
+    let (conf_theme, conf_bg) = theme::configured();
+    let background = !opts.transparent && conf_bg.unwrap_or(true);
+    let mut themes = theme::available();
+    let name = match (&opts.theme, conf_theme) {
+        (Some(wanted), _) => {
+            theme::find(&themes, wanted).with_context(|| format!("unknown theme {wanted:?}; see --list-themes"))?
+        }
+        // a stale config entry shouldn't stop ebtop from starting
+        (None, Some(wanted)) => theme::find(&themes, &wanted).unwrap_or_else(|| themes[0].clone()),
+        (None, None) => themes[0].clone(),
+    };
+    if !themes.iter().any(|e| e.name == name.name) {
+        themes.push(name.clone());
+    }
+    Ok((themes, name.name, background))
 }
 
 fn local_time() -> String {
@@ -181,7 +223,19 @@ fn print_dump(app: &App, kernel: &str) {
 }
 
 fn main() -> Result<()> {
-    let (interval, dump) = parse_args()?;
+    // Die quietly on a closed pipe (`ebtop --dump | head`) like other CLI
+    // tools, instead of Rust's default panic.
+    unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
+    let opts = parse_args()?;
+    let (themes, theme_name, background) = select_theme(&opts)?;
+    if opts.list_themes {
+        for e in &themes {
+            let mark = if e.name == theme_name { "*" } else { " " };
+            println!("{mark} {:<28} {}", e.name, e.origin());
+        }
+        return Ok(());
+    }
+    let (interval, dump) = (opts.interval, opts.dump);
     if unsafe { libc::geteuid() } != 0 {
         bail!("ebtop loads BPF programs and needs root: try `sudo {}`", std::env::args().next().unwrap());
     }
@@ -204,6 +258,7 @@ fn main() -> Result<()> {
     let ring = rbb.build()?;
 
     let mut app = App::new(reader.ncpu(), interval, own);
+    app.set_themes(themes, &theme_name, background);
     app.update(reader.read(&skel));
     let kernel = kernel_release();
 
@@ -219,6 +274,13 @@ fn main() -> Result<()> {
     }
 
     let mut terminal = ratatui::init();
+    execute!(std::io::stdout(), EnableMouseCapture)?;
+    let restore_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = execute!(std::io::stdout(), DisableMouseCapture);
+        restore_hook(info);
+    }));
+    let mut placed: Vec<(Panel, Rect)> = Vec::new();
     let result = (|| -> Result<()> {
         let mut next_tick = Instant::now() + app.interval;
         loop {
@@ -230,17 +292,39 @@ fn main() -> Result<()> {
             } else {
                 pending.borrow_mut().clear();
             }
-            terminal.draw(|f| ui::draw(f, &app, &kernel))?;
+            terminal.draw(|f| placed = ui::draw(f, &app, &kernel))?;
 
             let timeout = next_tick.saturating_duration_since(Instant::now()).min(Duration::from_millis(100));
-            if event::poll(timeout)?
-                && let Event::Key(k) = event::read()?
-            {
+            let ev = if event::poll(timeout)? { Some(event::read()?) } else { None };
+            if let Some(Event::Mouse(m)) = ev {
+                match m.kind {
+                    // click a panel to zoom it; click again anywhere to restore
+                    MouseEventKind::Down(MouseButton::Left) => {
+                        let at = Position::new(m.column, m.row);
+                        if app.maximized.is_some() {
+                            app.maximized = None;
+                        } else if let Some(&(p, _)) = placed.iter().find(|(_, r)| r.contains(at)) {
+                            app.maximized = Some(p);
+                        }
+                    }
+                    MouseEventKind::ScrollDown => app.scroll += 3,
+                    MouseEventKind::ScrollUp => app.scroll = app.scroll.saturating_sub(3),
+                    _ => {}
+                }
+            }
+            if let Some(Event::Key(k)) = ev {
                 if k.kind != KeyEventKind::Press {
                     continue;
                 }
                 match k.code {
+                    KeyCode::Esc if app.maximized.is_some() => app.maximized = None,
                     KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                    KeyCode::Char(c @ '1'..='7') => {
+                        let p = Panel::ALL[c as usize - '1' as usize];
+                        app.maximized = if app.maximized == Some(p) { None } else { Some(p) };
+                    }
+                    KeyCode::Char('t') => app.cycle_theme(true),
+                    KeyCode::Char('T') => app.cycle_theme(false),
                     KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => return Ok(()),
                     KeyCode::Tab | KeyCode::BackTab => {
                         app.view = if app.view == View::Processes { View::Programs } else { View::Processes };
@@ -281,6 +365,7 @@ fn main() -> Result<()> {
             }
         }
     })();
+    let _ = execute!(std::io::stdout(), DisableMouseCapture);
     ratatui::restore();
     result
 }

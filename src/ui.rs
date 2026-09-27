@@ -1,4 +1,4 @@
-//! btop-style rendering.
+//! btop-style rendering. All colors come from the active btop theme.
 
 use std::collections::VecDeque;
 
@@ -9,32 +9,10 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Cell, Paragraph, Row, Table};
 
-use crate::app::{App, FeedKind, Hist, View};
-
-const FG: Color = Color::Rgb(0xd8, 0xde, 0xe9);
-const DIM: Color = Color::Rgb(0x6b, 0x72, 0x80);
-const FAINT: Color = Color::Rgb(0x3b, 0x42, 0x52);
-const GREEN: (u8, u8, u8) = (0x50, 0xe0, 0x90);
-const YELLOW: (u8, u8, u8) = (0xf0, 0xc8, 0x50);
-const RED: (u8, u8, u8) = (0xff, 0x55, 0x60);
-
-const C_CPU: Color = Color::Rgb(0x88, 0xc0, 0xd0);
-const C_SCHED: Color = Color::Rgb(0xb4, 0x8e, 0xad);
-const C_DISK: Color = Color::Rgb(0xeb, 0xa0, 0x6b);
-const C_NET: Color = Color::Rgb(0x81, 0xa1, 0xf1);
-const C_SYS: Color = Color::Rgb(0xeb, 0xcb, 0x8b);
-const C_PROC: Color = Color::Rgb(0xa3, 0xd0, 0x8c);
-const C_FEED: Color = Color::Rgb(0xf0, 0x8c, 0xb4);
+use crate::app::{App, FeedKind, Hist, Panel, View};
+use crate::theme::{Gradient, Theme};
 
 // ------------------------------------------------------------------ helpers
-
-/// green -> yellow -> red over t in [0, 1]
-fn grad(t: f64) -> Color {
-    let t = t.clamp(0.0, 1.0);
-    let (a, b, u) = if t < 0.5 { (GREEN, YELLOW, t * 2.0) } else { (YELLOW, RED, (t - 0.5) * 2.0) };
-    let l = |x: u8, y: u8| (x as f64 + (y as f64 - x as f64) * u) as u8;
-    Color::Rgb(l(a.0, b.0), l(a.1, b.1), l(a.2, b.2))
-}
 
 pub fn si(v: f64) -> String {
     match v {
@@ -78,25 +56,46 @@ fn bar(frac: f64, width: usize) -> String {
     s + &" ".repeat(pad)
 }
 
-fn panel<'a>(title: &'a str, accent: Color, info: Vec<Span<'a>>) -> Block<'a> {
-    let mut t = vec![];
+fn fg(c: Color) -> Style {
+    Style::new().fg(c)
+}
+
+/// Box outline color for a panel, following btop's four boxes.
+fn box_color(th: &Theme, panel: Panel) -> Color {
+    match panel {
+        Panel::Cpu | Panel::Sched => th.cpu_box,
+        Panel::Disk | Panel::Syscalls => th.mem_box,
+        Panel::Net => th.net_box,
+        Panel::Table | Panel::Feed => th.proc_box,
+    }
+}
+
+const SUPERSCRIPT: [&str; 10] = ["⁰", "¹", "²", "³", "⁴", "⁵", "⁶", "⁷", "⁸", "⁹"];
+
+/// A btop-style box: outline in the box color, a superscript number (its
+/// zoom key) in the highlight color, then the title and extra info.
+fn panel<'a>(th: &Theme, which: Panel, title: &'a str, info: Vec<Span<'a>>) -> Block<'a> {
+    let outline = box_color(th, which);
+    let mut t = vec![Span::styled(SUPERSCRIPT[which.number()], fg(th.hi).add_modifier(Modifier::BOLD))];
     if !title.is_empty() {
-        t.push(Span::styled(format!(" {title} "), Style::new().fg(accent).add_modifier(Modifier::BOLD)));
+        t.push(Span::styled(format!("{title} "), fg(th.title).add_modifier(Modifier::BOLD)));
     }
     if !info.is_empty() {
-        t.push(Span::styled(if title.is_empty() { " " } else { "─ " }, Style::new().fg(FAINT)));
+        t.push(Span::styled(if title.is_empty() { "" } else { "─ " }, fg(outline)));
         t.extend(info);
         t.push(Span::raw(" "));
     }
-    Block::bordered().border_type(BorderType::Rounded).border_style(Style::new().fg(FAINT)).title(Line::from(t))
+    Block::bordered().border_type(BorderType::Rounded).border_style(fg(outline)).title(Line::from(t))
 }
 
-fn kv<'a>(k: &'a str, v: String, color: Color) -> Vec<Span<'a>> {
-    vec![Span::styled(k, Style::new().fg(DIM)), Span::styled(v, Style::new().fg(color).bold())]
+/// Label in the main text color (as btop's labels), value bold in `color`.
+fn kv<'a>(th: &Theme, k: &'a str, v: String, color: Color) -> Vec<Span<'a>> {
+    vec![Span::styled(k, fg(th.fg)), Span::styled(v, fg(color).add_modifier(Modifier::BOLD))]
 }
 
-/// Filled braille area graph, newest sample at the right edge.
-fn graph(buf: &mut Buffer, area: Rect, data: &VecDeque<f64>, max: f64, color: impl Fn(f64) -> Color) {
+/// Filled braille area graph, newest sample at the right edge, colored by
+/// height from the gradient like btop's graphs.
+fn graph(buf: &mut Buffer, area: Rect, data: &VecDeque<f64>, max: f64, grad: &Gradient) {
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -135,7 +134,7 @@ fn graph(buf: &mut Buffer, area: Rect, data: &VecDeque<f64>, max: f64, color: im
                 cell.set_char(' ');
             } else {
                 cell.set_char(char::from_u32(0x2800 + bits).unwrap());
-                cell.set_fg(color(1.0 - cy as f64 / h.max(1) as f64));
+                cell.set_fg(grad.at(1.0 - cy as f64 / h.max(1) as f64));
             }
         }
     }
@@ -146,9 +145,17 @@ fn hist_label(slot: usize) -> String {
 }
 
 /// Rows of a log2 latency histogram, merging the low end if it doesn't fit.
-fn hist_lines(h: &Hist, rows: usize, width: usize, hot_slot: (usize, usize)) -> Vec<Line<'static>> {
+/// Buckets are colored along `grad` between the `hot_slot` range.
+fn hist_lines(
+    th: &Theme,
+    h: &Hist,
+    rows: usize,
+    width: usize,
+    hot_slot: (usize, usize),
+    grad: &Gradient,
+) -> Vec<Line<'static>> {
     let (Some(first), Some(last)) = (h.slots.iter().position(|&n| n > 0), h.slots.iter().rposition(|&n| n > 0)) else {
-        return vec![Line::styled("  no events", Style::new().fg(DIM))];
+        return vec![Line::styled("  no events", fg(th.inactive))];
     };
     if rows == 0 {
         return vec![];
@@ -172,9 +179,9 @@ fn hist_lines(h: &Hist, rows: usize, width: usize, hot_slot: (usize, usize)) -> 
         .map(|(label, n, slot)| {
             let t = (slot as f64 - lo as f64) / (hi - lo) as f64;
             Line::from(vec![
-                Span::styled(format!("{label:>11} "), Style::new().fg(DIM)),
-                Span::styled(bar(n as f64 / peak as f64, bar_w), Style::new().fg(grad(t))),
-                Span::styled(format!("{:>7}", si(n as f64)), Style::new().fg(FG)),
+                Span::styled(format!("{label:>11} "), fg(th.graph_text)),
+                Span::styled(bar(n as f64 / peak as f64, bar_w), fg(grad.at(t))),
+                Span::styled(format!("{:>7}", si(n as f64)), fg(th.fg)),
             ])
         })
         .collect()
@@ -186,67 +193,95 @@ fn pct_opt(v: Option<u64>) -> String {
 
 // ------------------------------------------------------------------- panels
 
-pub fn draw(f: &mut Frame, app: &App, kernel: &str) {
+/// Draws the dashboard and returns where each panel landed, for mouse
+/// hit-testing. With a panel maximized, only that panel is drawn.
+pub fn draw(f: &mut Frame, app: &App, kernel: &str) -> Vec<(Panel, Rect)> {
+    let th = &app.theme;
     let area = f.area();
-    let core_rows = app.ncpu.div_ceil(if app.ncpu > 16 { 2 } else { 1 }) as u16;
-    let top_h = (core_rows + 3).clamp(10, 18);
-    let [header, top, mid, bottom, footer] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(top_h),
-        Constraint::Length(12),
-        Constraint::Min(8),
-        Constraint::Length(1),
-    ])
-    .areas(area);
+    // Paint the theme's background and default text color everywhere first;
+    // widgets that don't set a background keep it.
+    let base = th.bg.map_or(fg(th.fg), |bg| fg(th.fg).bg(bg));
+    f.buffer_mut().set_style(area, base);
 
+    let [header, body, footer] =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)]).areas(area);
     draw_header(f, header, app, kernel);
-
-    let [cpu, sched] = Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)]).areas(top);
-    draw_cpu(f, cpu, app);
-    draw_sched(f, sched, app);
-
-    let [disk, net, sys] =
-        Layout::horizontal([Constraint::Ratio(1, 3), Constraint::Ratio(1, 3), Constraint::Ratio(1, 3)]).areas(mid);
-    draw_disk(f, disk, app);
-    draw_net(f, net, app);
-    draw_syscalls(f, sys, app);
-
-    let [table, feed] = Layout::horizontal([Constraint::Percentage(64), Constraint::Percentage(36)]).areas(bottom);
-    match app.view {
-        View::Processes => draw_procs(f, table, app),
-        View::Programs => draw_progs(f, table, app),
-    }
-    draw_feed(f, feed, app);
     draw_footer(f, footer, app);
+
+    let placed: Vec<(Panel, Rect)> = match app.maximized {
+        Some(p) => vec![(p, body)],
+        None => {
+            let core_rows = app.ncpu.div_ceil(if app.ncpu > 16 { 2 } else { 1 }) as u16;
+            let top_h = (core_rows + 3).clamp(10, 18);
+            let [top, mid, bottom] =
+                Layout::vertical([Constraint::Length(top_h), Constraint::Length(12), Constraint::Min(8)]).areas(body);
+            let [cpu, sched] = Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)]).areas(top);
+            let [disk, net, sys] =
+                Layout::horizontal([Constraint::Ratio(1, 3), Constraint::Ratio(1, 3), Constraint::Ratio(1, 3)])
+                    .areas(mid);
+            let [table, feed] =
+                Layout::horizontal([Constraint::Percentage(64), Constraint::Percentage(36)]).areas(bottom);
+            vec![
+                (Panel::Cpu, cpu),
+                (Panel::Sched, sched),
+                (Panel::Disk, disk),
+                (Panel::Net, net),
+                (Panel::Syscalls, sys),
+                (Panel::Table, table),
+                (Panel::Feed, feed),
+            ]
+        }
+    };
+    for &(p, r) in &placed {
+        match p {
+            Panel::Cpu => draw_cpu(f, r, app),
+            Panel::Sched => draw_sched(f, r, app),
+            Panel::Disk => draw_disk(f, r, app),
+            Panel::Net => draw_net(f, r, app),
+            Panel::Syscalls => draw_syscalls(f, r, app),
+            Panel::Table if app.view == View::Processes => draw_procs(f, r, app),
+            Panel::Table => draw_progs(f, r, app),
+            Panel::Feed => draw_feed(f, r, app),
+        }
+    }
+    placed
 }
 
 fn draw_header(f: &mut Frame, area: Rect, app: &App, kernel: &str) {
+    let th = &app.theme;
+    let sep = || Span::styled("  │  ", fg(th.div_line));
     let mut spans = vec![
-        Span::styled(" ebtop ", Style::new().fg(Color::Black).bg(C_CPU).bold()),
-        Span::styled(format!("  {kernel}  "), Style::new().fg(DIM)),
-        Span::styled(format!("{} cpus", app.ncpu), Style::new().fg(DIM)),
-        Span::styled("  │  ", Style::new().fg(FAINT)),
-        Span::styled("interval ", Style::new().fg(DIM)),
-        Span::styled(format!("{:.2}s", app.interval.as_secs_f64()), Style::new().fg(FG)),
-        Span::styled("  │  ", Style::new().fg(FAINT)),
-        Span::styled("ebtop bpf overhead ", Style::new().fg(DIM)),
-        Span::styled(format!("{:.2}% cpu", app.own_overhead), Style::new().fg(grad(app.own_overhead / 5.0))),
+        Span::styled(" ebtop ", Style::new().fg(th.selected_fg).bg(th.selected_bg).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("  {kernel}  "), fg(th.graph_text)),
+        Span::styled(format!("{} cpus", app.ncpu), fg(th.graph_text)),
+        sep(),
+        Span::styled("interval ", fg(th.fg)),
+        Span::styled(format!("{:.2}s", app.interval.as_secs_f64()), fg(th.fg)),
+        sep(),
+        Span::styled("ebtop bpf overhead ", fg(th.fg)),
+        Span::styled(format!("{:.2}% cpu", app.own_overhead), fg(th.cpu.at(app.own_overhead / 5.0))),
+        sep(),
+        Span::styled("theme ", fg(th.fg)),
+        Span::styled(th.name.clone(), fg(th.title)),
     ];
     if app.paused {
-        spans.push(Span::styled("   PAUSED", Style::new().fg(RED_C).bold()));
+        spans.push(Span::styled("   PAUSED", fg(th.hi).add_modifier(Modifier::BOLD)));
     }
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-const RED_C: Color = Color::Rgb(RED.0, RED.1, RED.2);
-
 fn draw_cpu(f: &mut Frame, area: Rect, app: &App) {
+    let th = &app.theme;
     let block = panel(
+        th,
+        Panel::Cpu,
         "cpu",
-        C_CPU,
         vec![
-            Span::styled("on-cpu time via sched_switch ", Style::new().fg(DIM)),
-            Span::styled(format!("{:.1}%", app.cpu_total), Style::new().fg(grad(app.cpu_total / 100.0)).bold()),
+            Span::styled("on-cpu time via sched_switch ", fg(th.graph_text)),
+            Span::styled(
+                format!("{:.1}%", app.cpu_total),
+                fg(th.cpu.at(app.cpu_total / 100.0)).add_modifier(Modifier::BOLD),
+            ),
         ],
     );
     let inner = block.inner(area);
@@ -256,7 +291,7 @@ fn draw_cpu(f: &mut Frame, area: Rect, app: &App) {
     let core_w = if two_cols { 48 } else { 24 };
     let [g, cores] = Layout::horizontal([Constraint::Min(10), Constraint::Length(core_w)]).areas(inner);
     let g = Rect { width: g.width.saturating_sub(1), ..g };
-    graph(f.buffer_mut(), g, &app.hist.cpu, 100.0, grad);
+    graph(f.buffer_mut(), g, &app.hist.cpu, 100.0, &th.cpu);
 
     let rows = inner.height as usize;
     let mut lines: Vec<Line> = Vec::new();
@@ -268,9 +303,9 @@ fn draw_cpu(f: &mut Frame, area: Rect, app: &App) {
                 continue;
             }
             let p = app.cpu_pct[i];
-            spans.push(Span::styled(format!("C{i:<3}"), Style::new().fg(DIM)));
-            spans.push(Span::styled(bar(p / 100.0, 12), Style::new().fg(grad(p / 100.0)).bg(FAINT)));
-            spans.push(Span::styled(format!("{p:>5.0}%  "), Style::new().fg(FG)));
+            spans.push(Span::styled(format!("C{i:<3}"), fg(th.graph_text)));
+            spans.push(Span::styled(bar(p / 100.0, 12), fg(th.cpu.at(p / 100.0)).bg(th.meter_bg)));
+            spans.push(Span::styled(format!("{p:>5.0}%  "), fg(th.fg)));
         }
         lines.push(Line::from(spans));
     }
@@ -278,83 +313,95 @@ fn draw_cpu(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_sched(f: &mut Frame, area: Rect, app: &App) {
-    let block = panel("scheduler", C_SCHED, vec![Span::styled("run-queue latency", Style::new().fg(DIM))]);
+    let th = &app.theme;
+    let block = panel(th, Panel::Sched, "scheduler", vec![Span::styled("run-queue latency", fg(th.graph_text))]);
     let inner = block.inner(area);
     f.render_widget(block, area);
     let r = &app.rates;
     let mut lines = vec![
         Line::from(
-            [kv("ctx switch ", format!("{:<8}", si(r.csw) + "/s"), FG), kv("  wakeups ", si(r.wakeups) + "/s", FG)]
-                .concat(),
+            [
+                kv(th, "ctx switch ", format!("{:<8}", si(r.csw) + "/s"), th.fg),
+                kv(th, "  wakeups ", si(r.wakeups) + "/s", th.fg),
+            ]
+            .concat(),
         ),
         Line::from(
             [
-                kv("p50 ", format!("{:<8}", pct_opt(app.runq.percentile(0.5))), grad(0.1)),
-                kv(" p99 ", format!("{:<8}", pct_opt(app.runq.percentile(0.99))), grad(0.5)),
-                kv(" max ", pct_opt(app.runq.max()), grad(0.9)),
+                kv(th, "p50 ", format!("{:<8}", pct_opt(app.runq.percentile(0.5))), th.cpu.at(0.1)),
+                kv(th, " p99 ", format!("{:<8}", pct_opt(app.runq.percentile(0.99))), th.cpu.at(0.5)),
+                kv(th, " max ", pct_opt(app.runq.max()), th.cpu.at(0.9)),
             ]
             .concat(),
         ),
     ];
     let rows = (inner.height as usize).saturating_sub(lines.len());
-    lines.extend(hist_lines(&app.runq, rows, inner.width as usize, (10, 24)));
+    lines.extend(hist_lines(th, &app.runq, rows, inner.width as usize, (10, 24), &th.cpu));
     f.render_widget(Paragraph::new(lines), inner);
 }
 
 fn draw_disk(f: &mut Frame, area: Rect, app: &App) {
+    let th = &app.theme;
     let r = &app.rates;
-    let block = panel("disk", C_DISK, kv("iops ", si(r.iops), FG));
+    let block = panel(th, Panel::Disk, "disk", kv(th, "iops ", si(r.iops), th.fg));
     let inner = block.inner(area);
     f.render_widget(block, area);
-    let [text, g] = Layout::vertical([Constraint::Min(3), Constraint::Length(2)]).areas(inner);
+    let graph_h = (inner.height / 5).max(2);
+    let [text, g] = Layout::vertical([Constraint::Min(3), Constraint::Length(graph_h)]).areas(inner);
     let mut lines = vec![
         Line::from(
-            [kv("read ", format!("{:<10}", bytes(r.rd) + "/s"), GREEN_C), kv("write ", bytes(r.wr) + "/s", C_DISK)]
-                .concat(),
+            [
+                kv(th, "read ", format!("{:<10}", bytes(r.rd) + "/s"), th.free.at(1.0)),
+                kv(th, "write ", bytes(r.wr) + "/s", th.used.at(1.0)),
+            ]
+            .concat(),
         ),
         Line::from(
             [
-                kv("lat p50 ", format!("{:<8}", pct_opt(app.bio.percentile(0.5))), grad(0.1)),
-                kv(" p99 ", pct_opt(app.bio.percentile(0.99)), grad(0.6)),
+                kv(th, "lat p50 ", format!("{:<8}", pct_opt(app.bio.percentile(0.5))), th.cpu.at(0.1)),
+                kv(th, " p99 ", pct_opt(app.bio.percentile(0.99)), th.cpu.at(0.6)),
             ]
             .concat(),
         ),
     ];
     let rows = (text.height as usize).saturating_sub(lines.len());
-    lines.extend(hist_lines(&app.bio, rows, text.width as usize, (14, 27)));
+    lines.extend(hist_lines(th, &app.bio, rows, text.width as usize, (14, 27), &th.cpu));
     f.render_widget(Paragraph::new(lines), text);
     let max = app.hist.disk.iter().cloned().fold(0.0, f64::max);
-    graph(f.buffer_mut(), g, &app.hist.disk, max, |t| blend(C_DISK, t));
-}
-
-const GREEN_C: Color = Color::Rgb(GREEN.0, GREEN.1, GREEN.2);
-
-fn blend(c: Color, t: f64) -> Color {
-    let Color::Rgb(r, g, b) = c else { return c };
-    let k = 0.45 + 0.55 * t.clamp(0.0, 1.0);
-    Color::Rgb((r as f64 * k) as u8, (g as f64 * k) as u8, (b as f64 * k) as u8)
+    graph(f.buffer_mut(), g, &app.hist.disk, max, &th.used);
 }
 
 fn draw_net(f: &mut Frame, area: Rect, app: &App) {
+    let th = &app.theme;
     let r = &app.rates;
-    let block = panel("network", C_NET, vec![Span::styled("tcp", Style::new().fg(DIM))]);
+    let block = panel(th, Panel::Net, "network", vec![Span::styled("tcp", fg(th.graph_text))]);
     let inner = block.inner(area);
     f.render_widget(block, area);
-    let [text, g] = Layout::vertical([Constraint::Min(3), Constraint::Length(2)]).areas(inner);
+    let graph_h = (inner.height / 5).max(2);
+    let [text, g] = Layout::vertical([Constraint::Min(3), Constraint::Length(graph_h)]).areas(inner);
     let mut lines = vec![
         Line::from(
-            [kv("tx ", format!("{:<12}", bytes(r.tx) + "/s"), C_NET), kv("rx ", bytes(r.rx) + "/s", GREEN_C)].concat(),
+            [
+                kv(th, "tx ", format!("{:<12}", bytes(r.tx) + "/s"), th.upload.at(1.0)),
+                kv(th, "rx ", bytes(r.rx) + "/s", th.download.at(1.0)),
+            ]
+            .concat(),
         ),
         Line::from(
             [
-                kv("retrans ", format!("{:<9}", si(r.retrans) + "/s"), if r.retrans > 0.0 { YELLOW_C } else { FG }),
-                kv("drops ", si(r.drops) + "/s", if r.drops > 0.0 { RED_C } else { FG }),
+                kv(
+                    th,
+                    "retrans ",
+                    format!("{:<9}", si(r.retrans) + "/s"),
+                    if r.retrans > 0.0 { th.cpu.at(0.5) } else { th.fg },
+                ),
+                kv(th, "drops ", si(r.drops) + "/s", if r.drops > 0.0 { th.cpu.at(1.0) } else { th.fg }),
             ]
             .concat(),
         ),
     ];
     if !app.top_drops.is_empty() {
-        lines.push(Line::styled("drop reasons", Style::new().fg(DIM)));
+        lines.push(Line::styled("drop reasons", fg(th.graph_text)));
     }
     let rows = (text.height as usize).saturating_sub(lines.len());
     let w = text.width as usize;
@@ -362,24 +409,27 @@ fn draw_net(f: &mut Frame, area: Rect, app: &App) {
         let v = si(*rate);
         let name: String = name.chars().take(w.saturating_sub(v.len() + 3)).collect();
         lines.push(Line::from(vec![
-            Span::styled(format!(" {name:<width$}", width = w.saturating_sub(v.len() + 2)), Style::new().fg(FG)),
-            Span::styled(v, Style::new().fg(RED_C)),
+            Span::styled(format!(" {name:<width$}", width = w.saturating_sub(v.len() + 2)), fg(th.fg)),
+            Span::styled(v, fg(th.cpu.at(1.0))),
         ]));
     }
     f.render_widget(Paragraph::new(lines), text);
     let max = app.hist.net.iter().cloned().fold(0.0, f64::max);
-    graph(f.buffer_mut(), g, &app.hist.net, max, |t| blend(C_NET, t));
+    graph(f.buffer_mut(), g, &app.hist.net, max, &th.download);
 }
 
-const YELLOW_C: Color = Color::Rgb(YELLOW.0, YELLOW.1, YELLOW.2);
-
 fn draw_syscalls(f: &mut Frame, area: Rect, app: &App) {
+    let th = &app.theme;
     let r = &app.rates;
-    let block = panel("syscalls", C_SYS, kv("", si(r.syscalls) + "/s", FG));
+    let block = panel(th, Panel::Syscalls, "syscalls", kv(th, "", si(r.syscalls) + "/s", th.fg));
     let inner = block.inner(area);
     f.render_widget(block, area);
     let mut lines = vec![Line::from(
-        [kv("page faults ", format!("{:<9}", si(r.faults) + "/s"), FG), kv("forks ", si(r.fork) + "/s", FG)].concat(),
+        [
+            kv(th, "page faults ", format!("{:<9}", si(r.faults) + "/s"), th.fg),
+            kv(th, "forks ", si(r.fork) + "/s", th.fg),
+        ]
+        .concat(),
     )];
     let rows = (inner.height as usize).saturating_sub(lines.len());
     let w = inner.width as usize;
@@ -388,20 +438,21 @@ fn draw_syscalls(f: &mut Frame, area: Rect, app: &App) {
         let bar_w = w.saturating_sub(16 + 8);
         let name: String = name.chars().take(15).collect();
         lines.push(Line::from(vec![
-            Span::styled(format!("{name:<16}"), Style::new().fg(FG)),
-            Span::styled(bar(rate / peak, bar_w), Style::new().fg(blend(C_SYS, rate / peak))),
-            Span::styled(format!("{:>8}", si(*rate)), Style::new().fg(FG)),
+            Span::styled(format!("{name:<16}"), fg(th.fg)),
+            Span::styled(bar(rate / peak, bar_w), fg(th.cached.at(rate / peak))),
+            Span::styled(format!("{:>8}", si(*rate)), fg(th.fg)),
         ]));
     }
     f.render_widget(Paragraph::new(lines), inner);
 }
 
 fn table_title(app: &App) -> Vec<Span<'static>> {
+    let th = &app.theme;
     let tab = |name: &'static str, on: bool| {
         if on {
-            Span::styled(name, Style::new().fg(Color::Black).bg(C_PROC).bold())
+            Span::styled(name, Style::new().fg(th.selected_fg).bg(th.selected_bg).add_modifier(Modifier::BOLD))
         } else {
-            Span::styled(name, Style::new().fg(DIM))
+            Span::styled(name, fg(th.title))
         }
     };
     vec![
@@ -412,45 +463,47 @@ fn table_title(app: &App) -> Vec<Span<'static>> {
 }
 
 fn header_row(app: &App) -> Row<'static> {
+    let th = &app.theme;
     let sort = app.sort_col();
     let arrow = if app.sort_desc { "▼" } else { "▲" };
     Row::new(app.columns().iter().enumerate().map(|(i, &c)| {
         if i == sort {
-            Cell::from(format!("{c}{arrow}")).style(Style::new().fg(C_PROC).bold())
+            Cell::from(format!("{c}{arrow}")).style(fg(th.hi).add_modifier(Modifier::BOLD))
         } else {
-            Cell::from(c).style(Style::new().fg(DIM).bold())
+            Cell::from(c).style(fg(th.title).add_modifier(Modifier::BOLD))
         }
     }))
 }
 
-fn num_cell(s: String, active: bool) -> Cell<'static> {
-    Cell::from(Line::from(s).right_aligned()).style(Style::new().fg(if active { FG } else { FAINT }))
+fn num_cell(th: &Theme, s: String, active: bool) -> Cell<'static> {
+    Cell::from(Line::from(s).right_aligned()).style(fg(if active { th.fg } else { th.inactive }))
 }
 
 fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
+    let th = &app.theme;
     let visible: Vec<_> = app.visible_procs().collect();
     let mut info = table_title(app);
     info.push(Span::styled(
         format!("  {} shown{}", visible.len(), if app.hide_idle { " (active only)" } else { "" }),
-        Style::new().fg(DIM),
+        fg(th.graph_text),
     ));
-    let block = panel("", C_PROC, info);
+    let block = panel(th, Panel::Table, "", info);
     let height = block.inner(area).height.saturating_sub(1) as usize;
     let scroll = app.scroll.min(visible.len().saturating_sub(height));
     let rows = visible.iter().skip(scroll).take(height).map(|p| {
-        let rate = |v: f64| num_cell(if v > 0.0 { si(v) } else { "·".into() }, v > 0.0);
-        let byt = |v: f64| num_cell(if v >= 1.0 { bytes(v) } else { "·".into() }, v >= 1.0);
+        let rate = |v: f64| num_cell(th, if v > 0.0 { si(v) } else { "·".into() }, v > 0.0);
+        let byt = |v: f64| num_cell(th, if v >= 1.0 { bytes(v) } else { "·".into() }, v >= 1.0);
         Row::new(vec![
-            Cell::from(Line::from(p.pid.to_string()).right_aligned()).style(Style::new().fg(DIM)),
-            Cell::from(p.comm.clone()).style(Style::new().fg(FG)),
+            Cell::from(Line::from(p.pid.to_string()).right_aligned()).style(fg(th.graph_text)),
+            Cell::from(p.comm.clone()).style(fg(th.fg)),
             Cell::from(Line::from(vec![
-                Span::styled(bar(p.cpu / 100.0, 5), Style::new().fg(grad(p.cpu / 100.0)).bg(FAINT)),
-                Span::styled(format!("{:>6.1}", p.cpu), Style::new().fg(if p.cpu >= 0.05 { FG } else { FAINT })),
+                Span::styled(bar(p.cpu / 100.0, 5), fg(th.process.at(p.cpu / 100.0)).bg(th.meter_bg)),
+                Span::styled(format!("{:>6.1}", p.cpu), fg(if p.cpu >= 0.05 { th.fg } else { th.inactive })),
             ])),
             rate(p.syscalls),
             rate(p.csw),
-            num_cell(if p.runq_avg_ns > 0.0 { dur(p.runq_avg_ns) } else { "·".into() }, p.runq_avg_ns > 0.0).style(
-                Style::new().fg(if p.runq_avg_ns > 0.0 { grad(p.runq_avg_ns.log2() / 24.0 - 0.4) } else { FAINT }),
+            num_cell(th, if p.runq_avg_ns > 0.0 { dur(p.runq_avg_ns) } else { "·".into() }, p.runq_avg_ns > 0.0).style(
+                fg(if p.runq_avg_ns > 0.0 { th.cpu.at(p.runq_avg_ns.log2() / 24.0 - 0.4) } else { th.inactive }),
             ),
             rate(p.faults),
             byt(p.rd),
@@ -477,26 +530,27 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_progs(f: &mut Frame, area: Rect, app: &App) {
+    let th = &app.theme;
     let mut info = table_title(app);
-    info.push(Span::styled(format!("  {} loaded  ", app.progs.len()), Style::new().fg(DIM)));
-    info.push(Span::styled("* = ebtop", Style::new().fg(C_SCHED)));
-    let block = panel("", C_PROC, info);
+    info.push(Span::styled(format!("  {} loaded  ", app.progs.len()), fg(th.graph_text)));
+    info.push(Span::styled("* = ebtop", fg(th.proc_misc)));
+    let block = panel(th, Panel::Table, "", info);
     let height = block.inner(area).height.saturating_sub(1) as usize;
     let scroll = app.scroll.min(app.progs.len().saturating_sub(height));
     let rows = app.progs.iter().skip(scroll).take(height).map(|p| {
         let active = p.events > 0.0;
         Row::new(vec![
-            Cell::from(Line::from(p.id.to_string()).right_aligned()).style(Style::new().fg(DIM)),
-            Cell::from(p.ty.clone()).style(Style::new().fg(DIM)),
+            Cell::from(Line::from(p.id.to_string()).right_aligned()).style(fg(th.graph_text)),
+            Cell::from(p.ty.clone()).style(fg(th.graph_text)),
             Cell::from(Line::from(vec![
-                Span::styled(p.name.clone(), Style::new().fg(FG)),
-                Span::styled(if p.ours { " *" } else { "" }, Style::new().fg(C_SCHED)),
+                Span::styled(p.name.clone(), fg(th.fg)),
+                Span::styled(if p.ours { " *" } else { "" }, fg(th.proc_misc)),
             ])),
-            num_cell(if active { si(p.events) } else { "·".into() }, active),
-            num_cell(if active { format!("{:.0}", p.avg_ns) } else { "·".into() }, active),
+            num_cell(th, if active { si(p.events) } else { "·".into() }, active),
+            num_cell(th, if active { format!("{:.0}", p.avg_ns) } else { "·".into() }, active),
             Cell::from(Line::from(vec![
-                Span::styled(bar(p.cpu / 100.0, 5), Style::new().fg(grad(p.cpu / 10.0)).bg(FAINT)),
-                Span::styled(format!("{:>7.2}", p.cpu), Style::new().fg(if active { FG } else { FAINT })),
+                Span::styled(bar(p.cpu / 100.0, 5), fg(th.process.at(p.cpu / 10.0)).bg(th.meter_bg)),
+                Span::styled(format!("{:>7.2}", p.cpu), fg(if active { th.fg } else { th.inactive })),
             ])),
         ])
     });
@@ -513,14 +567,17 @@ fn draw_progs(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_feed(f: &mut Frame, area: Rect, app: &App) {
+    let th = &app.theme;
     let r = &app.rates;
     let block = panel(
+        th,
+        Panel::Feed,
         "exec / exit",
-        C_FEED,
-        [kv("exec ", si(r.exec) + "/s", FG), kv("  exit ", si(r.exit) + "/s", FG)].concat(),
+        [kv(th, "exec ", si(r.exec) + "/s", th.fg), kv(th, "  exit ", si(r.exit) + "/s", th.fg)].concat(),
     );
     let inner = block.inner(area);
     f.render_widget(block, area);
+    let bad_color = th.cpu.at(1.0);
     let lines: Vec<Line> = app
         .feed
         .iter()
@@ -528,27 +585,24 @@ fn draw_feed(f: &mut Frame, area: Rect, app: &App) {
         .take(inner.height as usize)
         .map(|e| {
             let mut spans = vec![
-                Span::styled(format!("{} ", e.time), Style::new().fg(FAINT)),
-                Span::styled(format!("{:>7} ", e.pid), Style::new().fg(DIM)),
+                Span::styled(format!("{} ", e.time), fg(th.inactive)),
+                Span::styled(format!("{:>7} ", e.pid), fg(th.graph_text)),
             ];
             match &e.kind {
                 FeedKind::Exec { ppid, args } => {
-                    spans.push(Span::styled("▶ ", Style::new().fg(GREEN_C)));
-                    spans.push(Span::styled(
-                        if args.is_empty() { e.comm.clone() } else { args.clone() },
-                        Style::new().fg(FG),
-                    ));
-                    spans.push(Span::styled(format!("  ←{ppid}"), Style::new().fg(FAINT)));
+                    spans.push(Span::styled("▶ ", fg(th.proc_misc)));
+                    spans.push(Span::styled(if args.is_empty() { e.comm.clone() } else { args.clone() }, fg(th.fg)));
+                    spans.push(Span::styled(format!("  ←{ppid}"), fg(th.inactive)));
                 }
                 FeedKind::Exit { code, dur_ns } => {
                     let status = code >> 8 & 0xff;
                     let sig = code & 0x7f;
                     let bad = status != 0 || sig != 0;
-                    spans.push(Span::styled("■ ", Style::new().fg(if bad { RED_C } else { DIM })));
-                    spans.push(Span::styled(format!("{} ", e.comm), Style::new().fg(DIM)));
+                    spans.push(Span::styled("■ ", fg(if bad { bad_color } else { th.graph_text })));
+                    spans.push(Span::styled(format!("{} ", e.comm), fg(th.graph_text)));
                     let what = if sig != 0 { format!("sig {sig}") } else { format!("exit {status}") };
-                    spans.push(Span::styled(what, Style::new().fg(if bad { RED_C } else { DIM })));
-                    spans.push(Span::styled(format!(" after {}", dur(*dur_ns as f64)), Style::new().fg(FAINT)));
+                    spans.push(Span::styled(what, fg(if bad { bad_color } else { th.graph_text })));
+                    spans.push(Span::styled(format!(" after {}", dur(*dur_ns as f64)), fg(th.inactive)));
                 }
             }
             Line::from(spans)
@@ -558,8 +612,9 @@ fn draw_feed(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
+    let th = &app.theme;
     let key = |k: &'static str, d: &'static str| {
-        [Span::styled(k, Style::new().fg(C_CPU).bold()), Span::styled(format!(" {d}  "), Style::new().fg(DIM))]
+        [Span::styled(k, fg(th.hi).add_modifier(Modifier::BOLD)), Span::styled(format!(" {d}  "), fg(th.fg))]
     };
     let spans = [
         key("q", "quit"),
@@ -567,6 +622,8 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
         key("←→", "sort"),
         key("r", "reverse"),
         key("↑↓", "scroll"),
+        key("1-7/click", if app.maximized.is_some() { "restore" } else { "zoom" }),
+        key("t", "theme"),
         key("i", if app.hide_idle { "show idle" } else { "hide idle" }),
         key("e", if app.show_exits { "hide exits" } else { "show exits" }),
         key("+-", "interval"),
@@ -584,7 +641,7 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    use crate::app::{App, FeedItem, FeedKind, View};
+    use crate::app::{App, FeedItem, FeedKind, Panel, View};
     use crate::bpf::{HIST_SLOTS, NR_COUNTERS, NR_DROP_REASONS, NR_SYSCALLS, ProcEntry, ProgStat, Pstat, Snapshot};
 
     fn snapshot(t: u64, ncpu: usize) -> Snapshot {
@@ -655,12 +712,34 @@ mod tests {
             });
             for (w, h) in [(20, 5), (80, 24), (120, 40), (250, 70), (400, 120)] {
                 for view in [View::Processes, View::Programs] {
-                    app.view = view;
-                    app.scroll = 1000;
-                    let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-                    term.draw(|f| super::draw(f, &app, "linux test")).unwrap();
+                    for maximized in [None].into_iter().chain(Panel::ALL.map(Some)) {
+                        app.view = view;
+                        app.scroll = 1000;
+                        app.maximized = maximized;
+                        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+                        let mut placed = Vec::new();
+                        term.draw(|f| placed = super::draw(f, &app, "linux test")).unwrap();
+                        assert_eq!(placed.len(), if maximized.is_some() { 1 } else { 7 });
+                    }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn renders_with_every_theme() {
+        let mut app = App::new(12, Duration::from_secs(1), HashSet::new());
+        for t in 1..4 {
+            app.update(snapshot(t, 12));
+        }
+        app.set_themes(crate::theme::available(), "Default", true);
+        for _ in 0..app.themes.len() {
+            let mut term = Terminal::new(TestBackend::new(160, 50)).unwrap();
+            term.draw(|f| {
+                super::draw(f, &app, "linux test");
+            })
+            .unwrap();
+            app.cycle_theme(true);
         }
     }
 }

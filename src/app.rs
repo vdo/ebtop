@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Duration;
 
 use crate::bpf::{self, Counter, HIST_SLOTS, ProgStat, Snapshot};
+use crate::theme::{self, Theme};
 
 const HISTORY: usize = 600;
 const FEED_LEN: usize = 500;
@@ -12,6 +13,28 @@ const FEED_LEN: usize = 500;
 pub enum View {
     Processes,
     Programs,
+}
+
+/// The dashboard's boxes, numbered like btop's (keys 1-7 zoom them).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Panel {
+    Cpu,
+    Sched,
+    Disk,
+    Net,
+    Syscalls,
+    Table,
+    Feed,
+}
+
+impl Panel {
+    pub const ALL: [Panel; 7] =
+        [Panel::Cpu, Panel::Sched, Panel::Disk, Panel::Net, Panel::Syscalls, Panel::Table, Panel::Feed];
+
+    /// 1-based number shown in the panel title and used as its zoom key.
+    pub fn number(self) -> usize {
+        Self::ALL.iter().position(|&p| p == self).unwrap() + 1
+    }
 }
 
 #[derive(Default, Clone)]
@@ -175,6 +198,12 @@ pub struct App {
     pub scroll: usize,
     pub hide_idle: bool,
     pub show_exits: bool,
+    /// Panel zoomed to fill the screen, if any.
+    pub maximized: Option<Panel>,
+    pub theme: Theme,
+    pub themes: Vec<theme::Entry>,
+    pub theme_idx: usize,
+    pub theme_background: bool,
 
     pub cpu_pct: Vec<f64>,
     pub cpu_total: f64,
@@ -207,6 +236,11 @@ impl App {
             scroll: 0,
             hide_idle: true,
             show_exits: true,
+            maximized: None,
+            theme: Theme::default_theme(true),
+            themes: Vec::new(),
+            theme_idx: 0,
+            theme_background: true,
             cpu_pct: vec![0.0; ncpu],
             cpu_total: 0.0,
             rates: Rates::default(),
@@ -223,6 +257,28 @@ impl App {
             drop_names: bpf::drop_reason_names(),
             own_progs,
             prev: None,
+        }
+    }
+
+    pub fn set_themes(&mut self, themes: Vec<theme::Entry>, current: &str, background: bool) {
+        self.themes = themes;
+        self.theme_background = background;
+        self.theme_idx = self.themes.iter().position(|e| e.name == current).unwrap_or(0);
+        self.load_theme();
+    }
+
+    pub fn cycle_theme(&mut self, forward: bool) {
+        let n = self.themes.len();
+        if n == 0 {
+            return;
+        }
+        self.theme_idx = if forward { (self.theme_idx + 1) % n } else { (self.theme_idx + n - 1) % n };
+        self.load_theme();
+    }
+
+    fn load_theme(&mut self) {
+        if let Some(entry) = self.themes.get(self.theme_idx) {
+            self.theme = entry.load(self.theme_background);
         }
     }
 
@@ -299,7 +355,8 @@ impl App {
 
         self.procs = proc_rows(&prev, &cur, dt);
         self.progs = prog_rows(&prev.progs, &cur.progs, dt, &self.own_progs);
-        self.own_overhead = self.progs.iter().filter(|p| p.ours).map(|p| p.cpu).sum::<f64>() / self.ncpu as f64;
+        self.own_overhead =
+            (self.progs.iter().filter(|p| p.ours).map(|p| p.cpu).sum::<f64>() / self.ncpu as f64).max(0.0);
         self.sort();
 
         let r = self.rates;

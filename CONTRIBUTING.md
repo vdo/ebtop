@@ -47,7 +47,9 @@ aarch64 runner kernels, verifies the minimum supported Rust version, and runs
 | `build.rs` | Compiles the BPF object into a skeleton; embeds the syscall table |
 | `src/bpf.rs` | Loading, reading snapshots, system-wide BPF program stats |
 | `src/app.rs` | Snapshot diffs → rates, histograms, table rows |
-| `src/ui.rs` | ratatui rendering (plus an offscreen render test) |
+| `src/ui.rs` | ratatui rendering (plus offscreen render tests) |
+| `src/theme.rs` | btop theme loading, discovery and config lookup |
+| `themes/` | btop's theme files, embedded at build time (Apache-2.0, see its README) |
 | `src/main.rs` | CLI, event loop, `--dump` |
 
 ## Working on the BPF side

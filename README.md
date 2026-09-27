@@ -1,4 +1,4 @@
-# ebtop
+# 🌊 ebtop
 
 [![CI](https://github.com/vdo/ebtop/actions/workflows/ci.yml/badge.svg)](https://github.com/vdo/ebtop/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/vdo/ebtop)](https://github.com/vdo/ebtop/releases/latest)
@@ -68,6 +68,9 @@ sudo ebtop                  # or ./target/release/ebtop when built from source
 
 ```
 -i, --interval SECONDS   refresh interval (default 1.0)
+-t, --theme NAME|PATH    btop color theme (see Themes below)
+    --transparent        keep the terminal's background instead of the theme's
+    --list-themes        list available themes and exit
     --dump               sample one interval, print a text summary and exit
 -V, --version            print version and exit
 ```
@@ -79,15 +82,41 @@ checking that all probes load on a given kernel.
 
 | Key | Action |
 |---|---|
+| `1`–`7`, or click a panel | zoom that panel to full screen; press again or click anywhere to restore |
 | `tab` | switch between processes and BPF programs |
 | `←` `→` | change sort column |
 | `r` | reverse sort |
-| `↑` `↓` `PgUp` `PgDn` `g` | scroll |
+| `↑` `↓` `PgUp` `PgDn` `g`, mouse wheel | scroll |
 | `i` | show/hide idle processes |
 | `e` | show/hide exits in the feed |
+| `t` `T` | next / previous theme |
 | `+` `-` | refresh interval ±250 ms |
 | `space` | pause |
-| `q` `Esc` | quit |
+| `Esc` | restore from zoom, otherwise quit |
+| `q` | quit |
+
+## Themes
+
+ebtop uses [btop](https://github.com/aristocratos/btop)'s color themes, with
+the same file format and semantics, so it looks like your btop out of the box:
+
+- All 41 themes that ship with btop are bundled, plus btop's built-in
+  `Default` and `TTY` (16-color) themes.
+- Theme files in `~/.config/btop/themes`, `~/.config/ebtop/themes` and
+  `/usr/share/btop/themes` are picked up too, and override bundled ones with
+  the same name. Under `sudo`, the invoking user's home is searched.
+- The theme is chosen by `--theme`, else `color_theme` in
+  `~/.config/ebtop/ebtop.conf`, else `color_theme` in btop's own
+  `~/.config/btop/btop.conf`, else `Default`. `theme_background = false` in
+  either file (or `--transparent`) keeps the terminal's background.
+
+```sh
+ebtop --list-themes               # * marks the active one; no root needed
+sudo ebtop -t nord
+echo 'color_theme = "gruvbox_dark"' > ~/.config/ebtop/ebtop.conf
+```
+
+Press `t` / `T` to cycle through themes live.
 
 ## How it works
 
@@ -127,6 +156,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Security issues: see
 [SECURITY.md](SECURITY.md).
 
 ## License
+
+The bundled themes in [`themes/`](themes) come from btop and are licensed
+under Apache-2.0; see [themes/README.md](themes/README.md).
 
 The BPF programs in [`src/bpf/`](src/bpf) are licensed under
 [GPL-2.0](LICENSE-GPL-2.0), which the kernel requires for the helpers they

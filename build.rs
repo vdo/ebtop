@@ -31,6 +31,7 @@ fn main() {
         .expect("failed to build BPF skeleton");
 
     write_syscall_table(&out_dir.join("syscalls.rs"), &target_arch, multiarch);
+    write_theme_table(&out_dir.join("themes.rs"));
 
     println!("cargo:rerun-if-changed={SRC}");
     println!("cargo:rerun-if-changed=src/bpf/ebtop.h");
@@ -89,4 +90,24 @@ fn resolve<'a>(symbols: &'a HashMap<String, String>, mut v: &'a str) -> Option<u
         v = symbols.get(v)?;
     }
     None
+}
+
+/// Embeds the bundled btop themes (themes/*.theme) as (name, contents).
+fn write_theme_table(out: &Path) {
+    let dir = Path::new(&env::var("CARGO_MANIFEST_DIR").unwrap()).join("themes");
+    println!("cargo:rerun-if-changed={}", dir.display());
+    let mut themes: Vec<PathBuf> = fs::read_dir(&dir)
+        .expect("reading themes/")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|e| e == "theme"))
+        .collect();
+    themes.sort();
+
+    let mut src = String::from("pub const THEMES: &[(&str, &str)] = &[\n");
+    for path in themes {
+        let name = path.file_stem().unwrap().to_string_lossy();
+        writeln!(src, "    ({name:?}, include_str!({:?})),", path.display().to_string()).unwrap();
+    }
+    src.push_str("];\n");
+    fs::write(out, src).expect("writing theme table");
 }
