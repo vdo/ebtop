@@ -1,6 +1,6 @@
 [package]
 name = "ebtop"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2024"
 rust-version = "1.88"
 description = "A btop-style real-time dashboard of kernel activity, built on eBPF"
