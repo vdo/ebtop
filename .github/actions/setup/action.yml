@@ -1,0 +1,33 @@
+name: Setup build environment
+description: Install the BPF toolchain and Rust
+
+inputs:
+  toolchain:
+    description: Rust toolchain to install
+    default: stable
+  components:
+    description: Extra rustup components
+    default: ""
+  vendored:
+    description: Also install what's needed to build libelf/zlib from source (--features vendored)
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Install system packages
+      shell: bash
+      run: |
+        pkgs="clang llvm libelf-dev zlib1g-dev pkg-config"
+        if [ "${{ inputs.vendored }}" = "true" ]; then
+          pkgs="$pkgs autoconf automake autopoint libtool gettext flex bison gawk make"
+        fi
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq --no-install-recommends $pkgs
+
+    - uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ inputs.toolchain }}
+        components: ${{ inputs.components }}
+
+    - uses: Swatinem/rust-cache@v2

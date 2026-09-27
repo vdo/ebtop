@@ -1,0 +1,49 @@
+name: Bug report
+description: Something is wrong, crashes, or a probe fails to load
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you saw instead.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: ebtop version
+      description: Output of `ebtop --version`, or the commit you built from.
+    validations:
+      required: true
+
+  - type: input
+    id: kernel
+    attributes:
+      label: Kernel
+      description: Output of `uname -srm`
+      placeholder: Linux 6.8.0-45-generic x86_64
+    validations:
+      required: true
+
+  - type: input
+    id: distro
+    attributes:
+      label: Distribution
+      placeholder: Ubuntu 24.04
+
+  - type: textarea
+    id: dump
+    attributes:
+      label: Output of `sudo ebtop --dump`
+      description: |
+        If ebtop fails to start, paste the full error. libbpf verifier logs are
+        long but very useful for load failures.
+      render: text
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Terminal emulator and size for rendering issues, screenshots, etc.

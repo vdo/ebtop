@@ -1,0 +1,22 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      # libbpf-rs, libbpf-sys and libbpf-cargo must move together
+      libbpf:
+        patterns: ["libbpf-*"]
+      rust-deps:
+        patterns: ["*"]
+        exclude-patterns: ["libbpf-*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directories: ["/", "/.github/actions/*"]
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

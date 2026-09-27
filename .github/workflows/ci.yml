@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  clippy:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup
+        with:
+          components: clippy
+      - run: cargo clippy --locked --all-targets -- -D warnings
+
+  test:
+    name: test (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup
+      - run: cargo build --locked
+      - run: cargo test --locked
+      # The real check: every program must pass the verifier and attach on
+      # the runner's kernel, and a sample must come back.
+      - name: Load BPF programs on the runner kernel
+        run: |
+          uname -a
+          sudo ./target/debug/ebtop --dump
+
+  msrv:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Read rust-version from Cargo.toml
+        id: msrv
+        run: echo "version=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/setup
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - run: cargo check --locked --all-targets
+
+  # Same configuration as the release build, so packaging breakage shows up
+  # before a tag is pushed.
+  vendored:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup
+        with:
+          vendored: "true"
+      - run: cargo build --locked --release --features vendored
+      - name: Check the binary only links glibc
+        run: |
+          ldd target/release/ebtop
+          ! ldd target/release/ebtop | grep -E 'libelf|libz'
+      - run: sudo ./target/release/ebtop --dump
+
+  deny:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check bans licenses sources

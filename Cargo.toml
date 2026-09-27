@@ -1,7 +1,20 @@
 [package]
 name = "ebtop"
-version = "0.1.0"
+version = "0.9.0"
 edition = "2024"
+rust-version = "1.88"
+description = "A btop-style real-time dashboard of kernel activity, built on eBPF"
+license = "(MIT OR Apache-2.0) AND GPL-2.0-only"
+repository = "https://github.com/vdo/ebtop"
+readme = "README.md"
+keywords = ["ebpf", "bpf", "monitoring", "tui", "linux"]
+categories = ["command-line-utilities", "development-tools::profiling", "os::linux-apis"]
+exclude = ["/.github"]
+
+[features]
+# Build libbpf, libelf and zlib from source and link them statically, so the
+# binary only depends on glibc. Used for release builds.
+vendored = ["libbpf-rs/vendored"]
 
 [dependencies]
 anyhow = "1.0.104"
@@ -12,3 +25,8 @@ ratatui = "0.30.2"
 
 [build-dependencies]
 libbpf-cargo = "0.27.2"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

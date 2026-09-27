@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Duration;
 
-use crate::bpf::{self, Counter, ProgStat, Snapshot, HIST_SLOTS};
+use crate::bpf::{self, Counter, HIST_SLOTS, ProgStat, Snapshot};
 
 const HISTORY: usize = 600;
 const FEED_LEN: usize = 500;
@@ -293,8 +293,7 @@ impl App {
         sc.sort_by(|a, b| b.1.total_cmp(&a.1));
         self.top_syscalls = sc;
 
-        let mut dr: Vec<(String, f64)> =
-            drop_rates.into_iter().map(|(i, r)| (self.drop_names[i].clone(), r)).collect();
+        let mut dr: Vec<(String, f64)> = drop_rates.into_iter().map(|(i, r)| (self.drop_names[i].clone(), r)).collect();
         dr.sort_by(|a, b| b.1.total_cmp(&a.1));
         self.top_drops = dr;
 
@@ -387,12 +386,7 @@ fn proc_rows(prev: &Snapshot, cur: &Snapshot, dt: f64) -> Vec<ProcRow> {
         .collect()
 }
 
-fn prog_rows(
-    prev: &HashMap<u32, ProgStat>,
-    cur: &HashMap<u32, ProgStat>,
-    dt: f64,
-    own: &HashSet<u32>,
-) -> Vec<ProgRow> {
+fn prog_rows(prev: &HashMap<u32, ProgStat>, cur: &HashMap<u32, ProgStat>, dt: f64, own: &HashSet<u32>) -> Vec<ProgRow> {
     cur.values()
         .map(|c| {
             let (pt, pc) = prev.get(&c.id).map_or((c.run_time_ns, c.run_cnt), |p| (p.run_time_ns, p.run_cnt));

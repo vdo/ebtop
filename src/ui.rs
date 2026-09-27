@@ -2,12 +2,12 @@
 
 use std::collections::VecDeque;
 
+use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Cell, Paragraph, Row, Table};
-use ratatui::Frame;
 
 use crate::app::{App, FeedKind, Hist, View};
 
@@ -88,10 +88,7 @@ fn panel<'a>(title: &'a str, accent: Color, info: Vec<Span<'a>>) -> Block<'a> {
         t.extend(info);
         t.push(Span::raw(" "));
     }
-    Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(FAINT))
-        .title(Line::from(t))
+    Block::bordered().border_type(BorderType::Rounded).border_style(Style::new().fg(FAINT)).title(Line::from(t))
 }
 
 fn kv<'a>(k: &'a str, v: String, color: Color) -> Vec<Span<'a>> {
@@ -150,9 +147,7 @@ fn hist_label(slot: usize) -> String {
 
 /// Rows of a log2 latency histogram, merging the low end if it doesn't fit.
 fn hist_lines(h: &Hist, rows: usize, width: usize, hot_slot: (usize, usize)) -> Vec<Line<'static>> {
-    let (Some(first), Some(last)) =
-        (h.slots.iter().position(|&n| n > 0), h.slots.iter().rposition(|&n| n > 0))
-    else {
+    let (Some(first), Some(last)) = (h.slots.iter().position(|&n| n > 0), h.slots.iter().rposition(|&n| n > 0)) else {
         return vec![Line::styled("  no events", Style::new().fg(DIM))];
     };
     if rows == 0 {
@@ -288,7 +283,10 @@ fn draw_sched(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(block, area);
     let r = &app.rates;
     let mut lines = vec![
-        Line::from([kv("ctx switch ", format!("{:<8}", si(r.csw) + "/s"), FG), kv("  wakeups ", si(r.wakeups) + "/s", FG)].concat()),
+        Line::from(
+            [kv("ctx switch ", format!("{:<8}", si(r.csw) + "/s"), FG), kv("  wakeups ", si(r.wakeups) + "/s", FG)]
+                .concat(),
+        ),
         Line::from(
             [
                 kv("p50 ", format!("{:<8}", pct_opt(app.runq.percentile(0.5))), grad(0.1)),
@@ -310,7 +308,10 @@ fn draw_disk(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(block, area);
     let [text, g] = Layout::vertical([Constraint::Min(3), Constraint::Length(2)]).areas(inner);
     let mut lines = vec![
-        Line::from([kv("read ", format!("{:<10}", bytes(r.rd) + "/s"), GREEN_C), kv("write ", bytes(r.wr) + "/s", C_DISK)].concat()),
+        Line::from(
+            [kv("read ", format!("{:<10}", bytes(r.rd) + "/s"), GREEN_C), kv("write ", bytes(r.wr) + "/s", C_DISK)]
+                .concat(),
+        ),
         Line::from(
             [
                 kv("lat p50 ", format!("{:<8}", pct_opt(app.bio.percentile(0.5))), grad(0.1)),
@@ -341,7 +342,9 @@ fn draw_net(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(block, area);
     let [text, g] = Layout::vertical([Constraint::Min(3), Constraint::Length(2)]).areas(inner);
     let mut lines = vec![
-        Line::from([kv("tx ", format!("{:<12}", bytes(r.tx) + "/s"), C_NET), kv("rx ", bytes(r.rx) + "/s", GREEN_C)].concat()),
+        Line::from(
+            [kv("tx ", format!("{:<12}", bytes(r.tx) + "/s"), C_NET), kv("rx ", bytes(r.rx) + "/s", GREEN_C)].concat(),
+        ),
         Line::from(
             [
                 kv("retrans ", format!("{:<9}", si(r.retrans) + "/s"), if r.retrans > 0.0 { YELLOW_C } else { FG }),
@@ -446,11 +449,9 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
             ])),
             rate(p.syscalls),
             rate(p.csw),
-            num_cell(
-                if p.runq_avg_ns > 0.0 { dur(p.runq_avg_ns) } else { "·".into() },
-                p.runq_avg_ns > 0.0,
-            )
-            .style(Style::new().fg(if p.runq_avg_ns > 0.0 { grad(p.runq_avg_ns.log2() / 24.0 - 0.4) } else { FAINT })),
+            num_cell(if p.runq_avg_ns > 0.0 { dur(p.runq_avg_ns) } else { "·".into() }, p.runq_avg_ns > 0.0).style(
+                Style::new().fg(if p.runq_avg_ns > 0.0 { grad(p.runq_avg_ns.log2() / 24.0 - 0.4) } else { FAINT }),
+            ),
             rate(p.faults),
             byt(p.rd),
             byt(p.wr),
@@ -533,7 +534,10 @@ fn draw_feed(f: &mut Frame, area: Rect, app: &App) {
             match &e.kind {
                 FeedKind::Exec { ppid, args } => {
                     spans.push(Span::styled("▶ ", Style::new().fg(GREEN_C)));
-                    spans.push(Span::styled(if args.is_empty() { e.comm.clone() } else { args.clone() }, Style::new().fg(FG)));
+                    spans.push(Span::styled(
+                        if args.is_empty() { e.comm.clone() } else { args.clone() },
+                        Style::new().fg(FG),
+                    ));
                     spans.push(Span::styled(format!("  ←{ppid}"), Style::new().fg(FAINT)));
                 }
                 FeedKind::Exit { code, dur_ns } => {
@@ -577,11 +581,11 @@ mod tests {
     use std::collections::{HashMap, HashSet};
     use std::time::Duration;
 
-    use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
 
     use crate::app::{App, FeedItem, FeedKind, View};
-    use crate::bpf::{ProcEntry, ProgStat, Pstat, Snapshot, HIST_SLOTS, NR_COUNTERS, NR_DROP_REASONS, NR_SYSCALLS};
+    use crate::bpf::{HIST_SLOTS, NR_COUNTERS, NR_DROP_REASONS, NR_SYSCALLS, ProcEntry, ProgStat, Pstat, Snapshot};
 
     fn snapshot(t: u64, ncpu: usize) -> Snapshot {
         let mut s = Snapshot {
@@ -601,11 +605,31 @@ mod tests {
         }
         for pid in 1..200u32 {
             let v = t * pid as u64 * 1000;
-            let stat = Pstat { oncpu_ns: v * 100, runq_ns: v, runq_cnt: t, csw: v, syscalls: v, faults: v, rd_bytes: v, wr_bytes: v, tx_bytes: v, rx_bytes: v };
+            let stat = Pstat {
+                oncpu_ns: v * 100,
+                runq_ns: v,
+                runq_cnt: t,
+                csw: v,
+                syscalls: v,
+                faults: v,
+                rd_bytes: v,
+                wr_bytes: v,
+                tx_bytes: v,
+                rx_bytes: v,
+            };
             s.procs.insert(pid, ProcEntry { comm: format!("process-with-a-long-name-{pid}"), stat });
         }
         for id in 1..60u32 {
-            s.progs.insert(id, ProgStat { id, ty: "tracing".into(), name: format!("prog_{id}"), run_time_ns: t * id as u64 * 1000, run_cnt: t * 10 });
+            s.progs.insert(
+                id,
+                ProgStat {
+                    id,
+                    ty: "tracing".into(),
+                    name: format!("prog_{id}"),
+                    run_time_ns: t * id as u64 * 1000,
+                    run_cnt: t * 10,
+                },
+            );
         }
         s
     }
@@ -617,8 +641,18 @@ mod tests {
             for t in 1..5 {
                 app.update(snapshot(t, ncpu));
             }
-            app.push_feed(FeedItem { time: "12:00:00".into(), pid: 1, comm: "sh".into(), kind: FeedKind::Exec { ppid: 0, args: "sh -c true".into() } });
-            app.push_feed(FeedItem { time: "12:00:01".into(), pid: 1, comm: "sh".into(), kind: FeedKind::Exit { code: 9, dur_ns: 5_000_000 } });
+            app.push_feed(FeedItem {
+                time: "12:00:00".into(),
+                pid: 1,
+                comm: "sh".into(),
+                kind: FeedKind::Exec { ppid: 0, args: "sh -c true".into() },
+            });
+            app.push_feed(FeedItem {
+                time: "12:00:01".into(),
+                pid: 1,
+                comm: "sh".into(),
+                kind: FeedKind::Exit { code: 9, dur_ns: 5_000_000 },
+            });
             for (w, h) in [(20, 5), (80, 24), (120, 40), (250, 70), (400, 120)] {
                 for view in [View::Processes, View::Programs] {
                     app.view = view;

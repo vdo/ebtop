@@ -1,0 +1,24 @@
+name: Security audit
+
+# New advisories appear without any change to this repo, so check on a
+# schedule as well as whenever dependencies change.
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  push:
+    paths: [Cargo.lock, Cargo.toml, deny.toml]
+  pull_request:
+    paths: [Cargo.lock, Cargo.toml, deny.toml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  advisories:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories

@@ -14,8 +14,8 @@ use libbpf_rs::{MapCore, MapFlags, OpenObject};
 mod skel {
     include!(concat!(env!("OUT_DIR"), "/ebtop.skel.rs"));
 }
-pub use skel::types;
 pub use skel::EbtopSkel;
+pub use skel::types;
 
 // Mirrors of the constants in src/bpf/ebtop.h.
 pub const MAX_CPUS: usize = 128;
@@ -63,9 +63,11 @@ pub enum Counter {
 }
 
 pub fn load(open_object: &mut MaybeUninit<OpenObject>) -> Result<EbtopSkel<'_>> {
-    let open = skel::EbtopSkelBuilder::default()
-        .open(open_object)
-        .context("opening BPF object")?;
+    #[allow(unused_mut)]
+    let mut open = skel::EbtopSkelBuilder::default().open(open_object).context("opening BPF object")?;
+    // exceptions:page_fault_user only exists on x86
+    #[cfg(not(target_arch = "x86_64"))]
+    open.progs.on_page_fault.set_autoload(false);
     let mut skel = open.load().context("loading BPF programs (are you root?)")?;
     skel.attach().context("attaching BPF programs")?;
     Ok(skel)
@@ -98,10 +100,7 @@ pub fn own_prog_ids(skel: &EbtopSkel) -> HashSet<u32> {
         &p.on_tcp_retransmit,
         &p.on_kfree_skb,
     ];
-    progs
-        .iter()
-        .filter_map(|prog| prog_info(prog.as_fd().as_raw_fd()).map(|i| i.id))
-        .collect()
+    progs.iter().filter_map(|prog| prog_info(prog.as_fd().as_raw_fd()).map(|i| i.id)).collect()
 }
 
 fn monotonic_ns() -> u64 {
@@ -358,10 +357,8 @@ pub fn prog_stats(names: &mut HashMap<u32, String>) -> Vec<ProgStat> {
             unsafe { libc::close(fd) };
             continue;
         };
-        let name = names
-            .entry(id)
-            .or_insert_with(|| btf_prog_name(fd, &info).unwrap_or_else(|| info.name.clone()))
-            .clone();
+        let name =
+            names.entry(id).or_insert_with(|| btf_prog_name(fd, &info).unwrap_or_else(|| info.name.clone())).clone();
         unsafe { libc::close(fd) };
         let ty = unsafe { libbpf_sys::libbpf_bpf_prog_type_str(info.ty) };
         let ty = if ty.is_null() {
@@ -375,22 +372,16 @@ pub fn prog_stats(names: &mut HashMap<u32, String>) -> Vec<ProgStat> {
     out
 }
 
-/// Syscall number -> name, from the installed kernel UAPI headers.
+mod syscalls {
+    include!(concat!(env!("OUT_DIR"), "/syscalls.rs"));
+}
+
+/// Syscall number -> name, from the UAPI headers embedded at build time.
 pub fn syscall_names() -> Vec<String> {
     let mut names: Vec<String> = (0..NR_SYSCALLS).map(|n| format!("#{n}")).collect();
-    let header = if cfg!(target_arch = "x86_64") {
-        "/usr/include/asm/unistd_64.h"
-    } else {
-        "/usr/include/asm-generic/unistd.h"
-    };
-    if let Ok(text) = std::fs::read_to_string(header) {
-        for line in text.lines() {
-            let mut it = line.split_whitespace();
-            if let (Some("#define"), Some(name), Some(num)) = (it.next(), it.next(), it.next())
-                && let (Some(name), Ok(num)) = (name.strip_prefix("__NR_"), num.parse::<usize>())
-                    && num < NR_SYSCALLS {
-                        names[num] = name.to_string();
-                    }
+    for &(num, name) in syscalls::SYSCALLS {
+        if let Some(slot) = names.get_mut(num as usize) {
+            *slot = name.to_string();
         }
     }
     names

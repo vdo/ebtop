@@ -1,0 +1,110 @@
+name: Release
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to (re)build a release for, e.g. v0.1.0
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Built on the oldest supported Ubuntu so the binaries run on any
+          # distro with glibc >= 2.35.
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Check tag matches Cargo.toml version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error::tag $TAG does not match Cargo.toml version $version"
+            exit 1
+          fi
+
+      - uses: ./.github/actions/setup
+        with:
+          vendored: "true"
+
+      - run: cargo build --locked --release --features vendored
+
+      - name: Smoke test
+        run: |
+          ./target/release/ebtop --version
+          ldd target/release/ebtop
+          sudo ./target/release/ebtop --dump
+
+      - name: Package
+        run: |
+          name="ebtop-$TAG-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          cp target/release/ebtop README.md CHANGELOG.md LICENSE-* "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Extract release notes from CHANGELOG.md
+        run: |
+          version="${TAG#v}"
+          awk -v v="$version" '
+            /^## \[/ { if (found) exit; if (index($0, "[" v "]")) { found = 1; next } }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            echo "::warning::no CHANGELOG.md section for $version; using generated notes only"
+          fi
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          (cd dist && sha256sum -c ./*.sha256)
+          gh release create "$TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "ebtop $TAG" \
+            --notes-file notes.md \
+            --generate-notes \
+            --verify-tag

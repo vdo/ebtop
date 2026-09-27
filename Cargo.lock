@@ -466,7 +466,7 @@ dependencies = [
 
 [[package]]
 name = "ebtop"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "libbpf-cargo",

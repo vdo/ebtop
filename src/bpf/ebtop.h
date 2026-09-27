@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /* Shared between ebtop.bpf.c and the Rust side (mirrored in src/bpf.rs). */
 #ifndef __EBTOP_H
 #define __EBTOP_H

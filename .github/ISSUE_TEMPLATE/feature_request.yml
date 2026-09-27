@@ -1,0 +1,22 @@
+name: Feature request
+description: A new metric, panel, or behavior
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What would you like to see?
+      description: The question you're trying to answer about your system, and how ebtop could help.
+    validations:
+      required: true
+
+  - type: textarea
+    id: source
+    attributes:
+      label: Kernel data source (if you know it)
+      description: Tracepoint, kprobe/fentry target, BPF iterator, etc.
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
